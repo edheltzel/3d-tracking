@@ -2,8 +2,8 @@
 // churning detections (red boxes, node dots, `x: 969  y: 1596` callouts in source-video
 // coordinates, long grey arcs with arrowheads) that trace an invisible fragmented body.
 // Each box is filled with churning ASCII, densest around its node.
-// The scene is 3D: every point takes a depth from the body and a camera orbits it (drag pans,
-// right/shift-drag orbits, scroll zooms, double-click resets). Boxes, ASCII and callouts stay flat and face the screen; only their position is 3D.
+// The scene is 3D: every point takes a depth from the body and a camera orbits it (drag orbits,
+// right/shift-drag pans, scroll or pinch zooms, double-click resets). Boxes, ASCII and callouts stay flat and face the screen; only their position is 3D.
 // Everything is a pure function of t and the camera (scrubbable via `time`), drawn on one canvas.
 import { useEffect, useRef, useState } from "react";
 import { Surface, useClock, useReducedMotion, type Polarity } from "@/lib/bl";
@@ -23,6 +23,7 @@ type Props = {
   asciiColor?: string;
   accent?: string;
   inkColor?: string;
+  cometColor?: string;
   background?: string;
   depth?: number;
   autoRotate?: number;
@@ -57,6 +58,8 @@ function noise(x: number, seed: number) {
 }
 
 const STRANDS = 13;
+const DRIFT = "#d4d6d8";
+const LOCK = "#db7093";
 const JOINTS = 14;
 // Source-video coordinate frame the callouts report in (the reference reads x 700–1600, y 1500–2900).
 const SRC = { x0: 640, y0: 1480, w: 1080, h: 1350 };
@@ -223,6 +226,107 @@ function strandZ(s: number, j: number, t: number, S: number) {
 // Nearer reads brighter: alpha falls off with camera depth.
 const fog = (z: number, dist: number) => Math.max(0.3, Math.min(1, 1.6 - 0.7 * (z / dist)));
 
+// Comets: fast curved 3D paths, some straight through the tracked field. Pure in t.
+type Comet = { id: number; v: number; env: number; at: (u: number) => V3; speed: number };
+function comets(t: number, S: number): Comet[] {
+  const R = S * 1.6;
+  const dir = (a: number, b: number) => {
+    const th = a * Math.PI * 2;
+    const ph = Math.acos(2 * b - 1);
+    return { x: Math.sin(ph) * Math.cos(th), y: Math.cos(ph) * 0.5, z: Math.sin(ph) * Math.sin(th) };
+  };
+  const out: Comet[] = [];
+  for (let i = 0; i < 4; i++) {
+    const P = 9 + 8 * hash(i, 91);
+    const local = t + hash(i, 92) * P;
+    const c = Math.floor(local / P);
+    const run = 2.2 + 1.6 * hash(i, c, 93);
+    const v = (local - c * P) / run;
+    if (v >= 1) continue;
+    const A = dir(hash(i, c, 94), hash(i, c, 95));
+    const through = hash(i, c, 96) < 0.45;
+    const B = through ? { x: -A.x, y: -A.y, z: -A.z } : dir(hash(i, c, 97), hash(i, c, 98));
+    const j = S * (through ? 0.12 : 0.4);
+    const C = { x: (hash(i, c, 99) - 0.5) * j, y: (hash(i, c, 100) - 0.5) * j, z: (hash(i, c, 101) - 0.5) * j };
+    const at = (u: number): V3 => {
+      const a = (1 - u) * (1 - u), b = 2 * u * (1 - u), d = u * u;
+      return { x: (a * A.x + d * B.x) * R + b * C.x, y: (a * A.y + d * B.y) * R + b * C.y, z: (a * A.z + d * B.z) * R + b * C.z };
+    };
+    const p0 = at(Math.max(0, v - 0.01));
+    const p1 = at(Math.min(1, v + 0.01));
+    const speed = Math.hypot(p1.x - p0.x, p1.y - p0.y, p1.z - p0.z) / ((Math.min(1, v + 0.01) - Math.max(0, v - 0.01)) * run);
+    out.push({ id: i, v, env: Math.sin(Math.PI * v), at, speed });
+  }
+  return out;
+}
+
+// Fastest a floating mote drifts, in S per unit of t (orbit + noise drift).
+const MOTE_SPEED = 0.035;
+
+// Ambient field: slow motes in a loose shell around the tracked body, plus comets that streak
+// across it on fast curved paths, some straight through the middle.
+function drawDrift(
+  ctx: CanvasRenderingContext2D,
+  t: number,
+  S: number,
+  project: (p: V3) => { x: number; y: number; s: number; z: number },
+  dist: number,
+  color: string,
+  flying: Comet[]
+) {
+  for (let i = 0; i < 220; i++) {
+    const th = hash(i, 71) * Math.PI * 2 + t * 0.03 * (hash(i, 72) - 0.5);
+    const ph = Math.acos(2 * hash(i, 73) - 1);
+    const r = S * (0.7 + 1.1 * hash(i, 74));
+    const p = {
+      x: r * Math.sin(ph) * Math.cos(th) + noise(t * 0.06 + i, 75) * S * 0.06,
+      y: r * Math.cos(ph) * 0.55 + noise(t * 0.05 + i, 76) * S * 0.05,
+      z: r * Math.sin(ph) * Math.sin(th) + noise(t * 0.06 + i, 77) * S * 0.06,
+    };
+    const sp = project(p);
+    if (sp.z < 40) continue;
+    const tw = 0.6 + 0.4 * noise(t * 0.8 + i * 3.1, 78);
+    ctx.fillStyle = color;
+    ctx.globalAlpha = (0.25 + 0.45 * hash(i, 80)) * tw * fog(sp.z, dist);
+    ctx.beginPath();
+    ctx.arc(sp.x, sp.y, (0.8 + 1.6 * hash(i, 81)) * Math.min(sp.s, 2.5), 0, Math.PI * 2);
+    ctx.fill();
+  }
+  for (const { v, env, at } of flying) {
+    let prev = project(at(v));
+    const head = prev;
+    ctx.lineCap = "round";
+    for (let k = 1; k <= 24; k++) {
+      const u = v - k * 0.01;
+      if (u < 0) break;
+      const q = project(at(u));
+      if (q.z > 40 && prev.z > 40) {
+        const fade = 1 - k / 24;
+        ctx.strokeStyle = rgba(color, 0.85 * env * fade * fog(q.z, dist));
+        ctx.lineWidth = Math.max(0.5, 3 * fade * Math.min(q.s, 2));
+        ctx.beginPath();
+        ctx.moveTo(prev.x, prev.y);
+        ctx.lineTo(q.x, q.y);
+        ctx.stroke();
+      }
+      prev = q;
+    }
+    if (head.z > 40) {
+      const rr = 10 * Math.min(head.s, 2);
+      const g = ctx.createRadialGradient(head.x, head.y, 0, head.x, head.y, rr);
+      g.addColorStop(0, rgba(color, 0.95 * env));
+      g.addColorStop(0.3, rgba(color, 0.5 * env));
+      g.addColorStop(1, rgba(color, 0));
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(head.x, head.y, rr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
 function draw(
   ctx: CanvasRenderingContext2D,
   w: number,
@@ -231,7 +335,7 @@ function draw(
   t: number,
   frame: number,
   cam: Cam,
-  o: { tracks: number; churn: number; connectors: boolean; labels: boolean; ascii: boolean; depth: number; stage: boolean; gridOpacity: number; curve: Curve; ink: string; asciiInk: string; void: string; signal: string; dim: string; font: string; mono: string }
+  o: { tracks: number; churn: number; connectors: boolean; labels: boolean; ascii: boolean; depth: number; stage: boolean; gridOpacity: number; curve: Curve; ink: string; asciiInk: string; lock: string; void: string; signal: string; dim: string; font: string; mono: string }
 ) {
   ctx.fillStyle = o.void;
   ctx.fillRect(0, 0, w, h);
@@ -282,6 +386,16 @@ function draw(
 
   // The subject's strands are never drawn; they only steer where specks and detections land.
   const live = Array.from({ length: STRANDS }, (_, s) => strand(s, t, w, h));
+
+  const flying = comets(t, S);
+  drawDrift(ctx, t, S, project, dist, DRIFT, flying);
+  const inField = (q: V3) => Math.hypot(q.x / (w * 0.42), q.y / (h * 0.45), q.z / (S * 0.45)) < 1;
+  const targets = flying
+    .map((c) => ({ c, q: c.at(c.v) }))
+    .filter(({ c }) => c.env > 0.15)
+    .map(({ c, q }) => ({ c, q, node: project(q), fast: c.speed / S > MOTE_SPEED * 3, field: inField(q) }))
+    .filter(({ node }) => node.z > 40 && node.x > -20 && node.x < w + 20 && node.y > -20 && node.y < h + 20);
+  const focus = targets.some((k) => k.field) ? 0.35 : targets.length ? 0.7 : 1;
 
   // Specks
   ctx.fillStyle = o.signal;
@@ -359,7 +473,7 @@ function draw(
 
   const placed: { x: number; y: number; w: number }[] = [];
   for (const { k, node } of boxes) {
-    const alpha = fog(node.z, dist);
+    const alpha = fog(node.z, dist) * focus;
     const bw = Math.round(k.bw);
     const bh = Math.round(k.bh);
     const bx = Math.round(node.x - k.bw * (0.2 + 0.6 * hash(k.id, 41))) + 0.5;
@@ -397,8 +511,54 @@ function draw(
     }
     placed.push({ x: lx, y: ly, w: tw });
     ctx.fillStyle = o.ink;
-    ctx.globalAlpha = Math.max(0.55, alpha);
+    ctx.globalAlpha = Math.max(0.55 * focus, alpha);
     ctx.fillText(text, lx, ly);
+    ctx.globalAlpha = 1;
+  }
+
+  // Comets are the tracking priority: every one on screen gets a lock, and one inside the field
+  // dims the rest. Faster than the motes, it flags in LOCK and blinks.
+  for (const { c, q, node, fast } of targets) {
+    const col = fast ? o.lock : o.signal;
+    const on = !fast || Math.floor(t * 7) % 2 === 0;
+    const a = (on ? 1 : 0.25) * Math.min(1, c.env * 2);
+    const size = Math.round(22 + 10 * Math.min(node.s, 2));
+    const bx = Math.round(node.x - size / 2) + 0.5;
+    const by = Math.round(node.y - size / 2) + 0.5;
+    const near = boxes.map((b) => b.node).sort((A, B) => Math.hypot(A.x - node.x, A.y - node.y) - Math.hypot(B.x - node.x, B.y - node.y)).slice(0, 3);
+    ctx.globalAlpha = a * 0.6;
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 4]);
+    ctx.beginPath();
+    for (const n of near) {
+      ctx.moveTo(n.x, n.y);
+      ctx.lineTo(node.x, node.y);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = a;
+    ctx.fillStyle = rgba(col, 0.12);
+    ctx.fillRect(bx, by, size, size);
+    ctx.strokeRect(bx, by, size, size);
+    const tick = 6;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (const [x, y, dx, dy] of [[bx, by, 1, 1], [bx + size, by, -1, 1], [bx, by + size, 1, -1], [bx + size, by + size, -1, -1]]) {
+      ctx.moveTo(x - dx * 3, y + dy * tick);
+      ctx.lineTo(x - dx * 3, y - dy * 3);
+      ctx.lineTo(x + dx * tick, y - dy * 3);
+    }
+    ctx.stroke();
+    ctx.lineWidth = 1;
+    if (o.labels) {
+      const src = toSrc({ x: q.x + w / 2, y: q.y + h / 2 }, w, h);
+      ctx.font = o.font;
+      ctx.textBaseline = "alphabetic";
+      ctx.fillStyle = col;
+      ctx.fillText(`${fast ? "LOCK" : "TRK"} ${String(c.id).padStart(2, "0")}  x: ${src.x}  y: ${src.y}  z: ${Math.round(1000 + (q.z / S) * 1000)}`, bx, by - 6);
+      ctx.fillText(`v: ${(c.speed / S / MOTE_SPEED).toFixed(1)}×`, bx, by + size + 13);
+    }
     ctx.globalAlpha = 1;
   }
 
@@ -442,6 +602,7 @@ export default function TrackingOverlay({
   asciiColor,
   accent,
   inkColor,
+  cometColor,
   background,
   depth = 1,
   autoRotate = 0.06,
@@ -485,7 +646,7 @@ export default function TrackingOverlay({
     ro.observe(el);
     const down = (e: PointerEvent) => {
       if (e.button !== 0 && e.button !== 2) return;
-      drag.current = { x: e.clientX, y: e.clientY, orbit: e.button === 2 || e.shiftKey };
+      drag.current = { x: e.clientX, y: e.clientY, orbit: e.button === 0 && !e.shiftKey };
       el.setPointerCapture(e.pointerId);
       el.style.cursor = "grabbing";
     };
@@ -569,6 +730,7 @@ export default function TrackingOverlay({
       ink,
       // Colour props take any CSS colour; unset, they follow the polarity's ink and signal.
       asciiInk: asciiColor || ink,
+      lock: cometColor || LOCK,
       void: background || v("--bl-void") || "#000",
       signal: accent || v("--bl-signal") || "#ff2416",
       dim: rgba(ink, 0.4),
@@ -587,7 +749,7 @@ export default function TrackingOverlay({
       bctx.clearRect(0, 0, b.width, b.height);
       bctx.drawImage(cv, 0, 0, b.width, b.height);
     }
-  }, [bloom, bloomRadius, t, fps, tracks, churn, connectors, bend, bendSpread, linkWeight, linkOpacity, arrows, labels, ascii, asciiColor, accent, inkColor, background, depth, autoRotate, stage, gridOpacity, polarity, sized, moved]);
+  }, [bloom, bloomRadius, t, fps, tracks, churn, connectors, bend, bendSpread, linkWeight, linkOpacity, arrows, labels, ascii, asciiColor, accent, inkColor, cometColor, background, depth, autoRotate, stage, gridOpacity, polarity, sized, moved]);
 
   return (
     <Surface polarity={polarity}>

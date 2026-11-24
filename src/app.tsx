@@ -1,23 +1,34 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import TrackingOverlay from "@/variants/tracking-overlay";
 
-type Colors = { accent: string; asciiColor: string; inkColor: string; background: string };
+type Mode = "rotate" | "pan" | "zoom" | "reset";
+
+const HINTS: { mode: Mode; label: string }[] = [
+  { mode: "rotate", label: "Drag: rotate" },
+  { mode: "pan", label: "Right / Shift-drag: pan" },
+  { mode: "zoom", label: "Scroll: zoom" },
+  { mode: "reset", label: "Double-click: reset" },
+];
+
+
+type Colors = { accent: string; asciiColor: string; inkColor: string; cometColor: string; background: string };
 
 const STORAGE_KEY = "tracking-overlay:colors";
 
-const DEFAULTS: Colors = { accent: "#667b5b", asciiColor: "#6b9654", inkColor: "#ffffff", background: "#000000" };
+const DEFAULTS: Colors = { accent: "#667b5b", asciiColor: "#6b9654", inkColor: "#ffffff", cometColor: "#db7093", background: "#000000" };
 
 const FIELDS: { key: keyof Colors; label: string }[] = [
   { key: "accent", label: "Boxes" },
   { key: "asciiColor", label: "ASCII" },
   { key: "inkColor", label: "Lines" },
+  { key: "cometColor", label: "Comet lock" },
   { key: "background", label: "Background" },
 ];
 
 const PALETTE = [
   "#6b9654", "#667b5b", "#9ec27f", "#3f5a33",
   "#ff2416", "#ff8a3d", "#ffd23f", "#00ff88",
-  "#3ddcff", "#4f7cff", "#b46bff", "#ff5fa2",
+  "#3ddcff", "#4f7cff", "#b46bff", "#db7093",
   "#ffffff", "#9a9a9a", "#101830", "#000000",
 ];
 
@@ -58,6 +69,13 @@ export default function App() {
   const [colors, setColors] = useState<Colors>(load);
   const [open, setOpen] = useState(true);
   const [editing, setEditing] = useState<keyof Colors | null>(null);
+  const [active, setActive] = useState<Mode | null>(null);
+  const timer = useRef<number>(0);
+  const flash = (mode: Mode) => {
+    setActive(mode);
+    clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setActive(null), 300);
+  };
   const set = (key: keyof Colors, value: string) => setColors((c) => ({ ...c, [key]: value }));
 
   useEffect(() => {
@@ -66,7 +84,31 @@ export default function App() {
 
   return (
     <div className="fixed inset-0">
-      <TrackingOverlay {...colors} />
+      <div
+        className="absolute inset-0"
+        onPointerDown={(e) => setActive(e.button === 0 && !e.shiftKey ? "rotate" : e.button === 0 || e.button === 2 ? "pan" : null)}
+        onPointerUp={() => setActive(null)}
+        onPointerCancel={() => setActive(null)}
+        onWheel={() => flash("zoom")}
+        onDoubleClick={() => flash("reset")}
+      >
+        <TrackingOverlay {...colors} />
+      </div>
+      <div className="bl pointer-events-none absolute right-3 bottom-3 z-10 flex flex-wrap justify-end gap-x-2 gap-y-1 text-label tracking-widest text-ink-40 uppercase">
+        {HINTS.map(({ mode, label }) => (
+          <span
+            key={mode}
+            className="border px-2 py-1 transition-colors duration-150"
+            style={
+              active === mode
+                ? { color: colors.accent, borderColor: colors.accent, background: `${colors.accent}26` }
+                : { borderColor: "transparent" }
+            }
+          >
+            {label}
+          </span>
+        ))}
+      </div>
       <div
         className="bl absolute top-3 right-3 z-10 w-56 border border-ink-22 text-label uppercase backdrop-blur-sm"
         style={{ background: `${colors.background}cc` }}
