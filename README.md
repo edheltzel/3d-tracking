@@ -30,6 +30,16 @@ pnpm run preview
 
 `build` writes to `dist/`; `preview` serves that build locally.
 
+## Deploy
+
+```sh
+pnpm run deploy
+```
+
+`deploy` builds and uploads `dist/` to Cloudflare Pages with wrangler. Config lives in `wrangler.toml`. The live site is https://tracking-overlay.pages.dev.
+
+The first run needs `npx wrangler login`.
+
 ## Controls
 
 | Input | Action |
